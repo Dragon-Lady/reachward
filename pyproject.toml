@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reachward"
+version = "0.1.0"
+description = "Local, offline agent credential and MCP permission inventory"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{name = "Dragon Lady"}]
+dependencies = ["tomli>=2; python_version < '3.11'"]
+classifiers = ["Programming Language :: Python :: 3", "Operating System :: POSIX :: Linux", "Topic :: Security"]
+
+[project.scripts]
+reachward = "reachward.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Dragon-Lady/reachward"
+Issues = "https://github.com/Dragon-Lady/reachward/issues"
+
+[tool.setuptools.packages.find]
+include = ["reachward*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

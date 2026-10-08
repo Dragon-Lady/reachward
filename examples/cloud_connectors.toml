@@ -1,0 +1,6 @@
+# Copy to ~/.config/reachward/cloud_connectors.toml with mode 0600.
+# These are declared permissions, never claims about a cloud token's real scope.
+[[connectors]]
+name = "Example cloud drive"
+scopes = ["https://www.googleapis.com/auth/drive.readonly"]
+review_by = "2027-01-01"

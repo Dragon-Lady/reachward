@@ -1,0 +1,24 @@
+# Copy to ~/.config/reachward/config.toml with mode 0600.
+stale_days = 90
+known_servers = ["example-server"]
+roots = []
+env_files = []
+alert_channels = []
+
+# Each explicitly configured source is required: missing/unreadable means exit 2.
+# [[extra_sources]]
+# collector = "other"
+# path = "~/example/mcp.json"
+
+# Alert destinations are opt-in. An empty channel list uses stdout only.
+# alert_channels = ["slack"]
+# alert_slack_webhook_env = "REACHWARD_SLACK_WEBHOOK"
+# alert_ntfy_topic = "https://ntfy.example.test/reachward"
+# alert_ntfy_token_env = "REACHWARD_NTFY_TOKEN"
+# alert_email = "operator@example.test"
+# alert_smtp_host = "smtp.example.test"
+# alert_smtp_port = 587
+# alert_smtp_from = "reachward@example.test"
+# alert_smtp_username = "operator"
+# alert_smtp_password_env = "RW_SMTP_PASS"
+# alert_smtp_security = "starttls"
