@@ -1,8 +1,16 @@
-# v0.1 review candidate
+# v0.1 validation notes
 
-This is a review candidate, not a published package release. The repository has
-no CI workflows, deploy configuration or release automation. No timers are
-installed by the tool.
+This records the validation scope and remaining independent checks. Publication
+is owner-authorized; no final independent sign-off of the follow-up corrections
+is implied. No timers are installed by the tool.
+
+The release workflow tests source and the built wheel on Python 3.10, 3.12 and
+3.13. Test dependencies run in separate jobs from the artifact build. Only a
+published GitHub release can invoke PyPI Trusted Publishing, after all checks
+pass and the tag matches the package version. Manual workflow runs verify only.
+Actions are pinned to commit hashes; the publishing job alone receives OIDC
+permission and publishes attestations. Check the individual workflow run for
+actual results; this description alone is not proof that it passed.
 
 ## Evidence available locally
 
@@ -67,9 +75,10 @@ fixed PATH/timer quoting, online/offline diff symmetry, and privacy/schema check
 The original offline, canary, private-mode and aggregate alert tests remain.
 
 - Retest the correction diff and inspect the updated private scan report.
-- Run `list-sources` and an offline scan on the second intended Linux host. Some
-  agent configurations were absent/empty on the first host; fixture coverage is
-  not a substitute for inspecting the second host.
+- The reviewer reports a second-host scan finding five configuration sources,
+  with zero network calls, unchanged targets and no leakage of 51 tested secret
+  values. The tested revision was not supplied, so this result is not attributed
+  to the follow-up corrections.
 - Decide whether to use the optional online scope check, the alert destinations,
   and a schedule. They are implemented but external delivery and scheduling
   have not been enabled or live-tested.
@@ -81,5 +90,5 @@ The original offline, canary, private-mode and aggregate alert tests remain.
   YAML/dotenv parsing; heuristic argument credential/pin detection; declared
   scopes are not verified permissions; arbitrary wrappers are not executed.
 
-Release, external deployment, social posting and scheduling require separate
-approval. No final review sign-off is implied by this document.
+Publication and social posting are owner-authorized. External alerts and
+scheduling remain disabled. No final review sign-off is implied by this document.

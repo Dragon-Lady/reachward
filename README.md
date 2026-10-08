@@ -25,9 +25,21 @@ Built and maintained by Dragon Lady — [GitHub](https://github.com/Dragon-Lady)
 - No claim that a host, credential, package, server, or account is safe. A
   credential's existence does not prove it is valid or accessible to an agent.
 
-## Install from source
+## Install
 
-This version is awaiting independent review. A PyPI release is not yet published.
+For the published release, install into an isolated environment:
+
+```sh
+python3 -m venv ~/.local/share/reachward-venv
+~/.local/share/reachward-venv/bin/python -m pip install reachward==0.1.0
+~/.local/share/reachward-venv/bin/reachward --help
+```
+
+Or use `pipx install reachward==0.1.0`. Check the
+[PyPI release page](https://pypi.org/project/reachward/0.1.0/) for availability.
+Installation does not create a baseline, enable alerts, or install a timer.
+
+To install a local source checkout:
 
 ```sh
 python3 -m venv .venv

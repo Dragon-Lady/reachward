@@ -1,0 +1,110 @@
+name: Verify and publish
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.10", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Test source
+        run: |
+          python -m pip install --disable-pip-version-check pytest==9.1.1 .
+          python -m pytest -q
+
+  build:
+    needs: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Verify release tag
+        if: github.event_name == 'release'
+        run: |
+          python - <<'PY'
+          import os, pathlib, tomllib
+          version = tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"]
+          if os.environ["GITHUB_REF_NAME"] != f"v{version}":
+              raise SystemExit("release tag does not match package version")
+          PY
+      - name: Build clean distributions without test dependencies
+        run: |
+          python -m pip install --disable-pip-version-check build==1.6.1
+          python -m build
+          python - <<'PY'
+          import hashlib, pathlib, tomllib
+          version = tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"]
+          paths = sorted(pathlib.Path("dist").iterdir())
+          expected = [f"reachward-{version}-py3-none-any.whl", f"reachward-{version}.tar.gz"]
+          if [p.name for p in paths] != expected:
+              raise SystemExit("unexpected distribution set")
+          for path in paths:
+              print(hashlib.sha256(path.read_bytes()).hexdigest(), path.name)
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: distributions
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  installed-tests:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.10", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: distributions
+          path: dist/
+      - name: Test installed wheel outside the checkout
+        run: |
+          python -m pip install --disable-pip-version-check pytest==9.1.1 dist/*.whl
+          cp -R tests "$RUNNER_TEMP/reachward-tests"
+          cd "$RUNNER_TEMP"
+          python -I -m pytest -q reachward-tests
+          reachward --help
+          python -I "$GITHUB_WORKSPACE/examples/permission_poc.py"
+
+  publish:
+    if: github.event_name == 'release'
+    needs: [build, installed-tests]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/reachward/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: distributions
+          path: dist/
+      - name: Publish with Trusted Publishing and attestations
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
