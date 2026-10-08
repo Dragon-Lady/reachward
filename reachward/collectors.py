@@ -11,7 +11,7 @@ from urllib.parse import urlsplit, parse_qsl, unquote
 
 from .config import tomllib
 from .safety import (absolute, bounded_read, fingerprint, is_value, read_error,
-                     Redactor, SafeError, SECRET_NAME, TOKEN)
+                     Redactor, SafeError, secret_name, TOKEN)
 
 
 def scopes(value):
@@ -141,7 +141,7 @@ class Inventory:
                     raise SafeError("invalid environment map; not inspected")
                 entry["env_names"] = sorted(str(n) for n in env)
                 for n, value in env.items():
-                    if SECRET_NAME.search(n) or (isinstance(value, str) and TOKEN.search(value)):
+                    if secret_name(n) or (isinstance(value, str) and TOKEN.search(value)):
                         self.credential(entry, value, True)
                 for value in server.get("env_vars", []):
                     if isinstance(value, str):
@@ -159,16 +159,16 @@ class Inventory:
                     if isinstance(server.get(field), str):
                         entry["env_names"].append(server[field])
                 for field, value in server.items():
-                    if SECRET_NAME.search(field) and not field.endswith(("_env", "_env_var")):
+                    if secret_name(field) and not field.endswith(("_env", "_env_var")):
                         self.credential(entry, value, True)
                 for index, arg in enumerate(args):
                     for match in TOKEN.finditer(arg):
                         self.credential(entry, match.group(), True)
                     if "=" in arg:
                         option, value = arg.split("=", 1)
-                        if SECRET_NAME.search(option):
+                        if secret_name(option):
                             self.credential(entry, value, True)
-                    elif index and args[index - 1].startswith("-") and SECRET_NAME.search(args[index - 1]):
+                    elif index and args[index - 1].startswith("-") and secret_name(args[index - 1]):
                         self.credential(entry, arg, True)
                     header = re.fullmatch(r"(?i)(?:authorization|x-api-key)\s*:\s*(.+)", arg)
                     if header:
@@ -196,7 +196,7 @@ class Inventory:
             if value:
                 self.credential(entry, unquote(value), True)
         for name, value in parse_qsl(parsed.query):
-            if SECRET_NAME.search(name):
+            if secret_name(name):
                 self.credential(entry, value, True)
         if parsed.hostname == "hooks.slack.com" and parsed.path:
             self.credential(entry, url, True)
@@ -223,7 +223,7 @@ class Inventory:
         def walk(obj):
             if isinstance(obj, dict):
                 for k, v in obj.items():
-                    if SECRET_NAME.search(k):
+                    if secret_name(k):
                         self.credential(entry, v)
                     walk(v)
             elif isinstance(obj, list):
@@ -241,7 +241,11 @@ class Inventory:
             self.entries.append(entry)
 
     def rclone(self, path, raw, info, parent):
-        if raw.lstrip().startswith(b"RCLONE_ENCRYPT_V"):
+        # rclone writes a comment and blank line before its encryption marker.
+        # Match the first significant line, as its reader does; never decrypt.
+        first = next((line.strip() for line in raw.splitlines()
+                      if line.strip() and not line.strip().startswith((b"#", b";"))), b"")
+        if first.startswith(b"RCLONE_ENCRYPT_V"):
             self.sources[-1]["status"] = "encrypted: not inspected"
             entry = self.record("rclone", path, "encrypted configuration", info, parent)
             entry["token_storage"] = "encrypted: not inspected"
@@ -257,7 +261,7 @@ class Inventory:
             if "drive_type" in item:
                 entry["drive_type"] = item["drive_type"]
             for key, value in item.items():
-                if SECRET_NAME.search(key) and key != "token":
+                if secret_name(key) and key != "token":
                     self.credential(entry, value)
             if item.get("token"):
                 token = json.loads(item["token"])
@@ -273,7 +277,7 @@ class Inventory:
     def env(self, path, raw, info, parent):
         for line in raw.decode("utf-8").splitlines():
             match = re.match(r"^\s*(?:export\s+)?([A-Za-z_]\w*)\s*=\s*(.*)$", line)
-            if not match or not SECRET_NAME.search(match[1]):
+            if not match or not secret_name(match[1]):
                 continue
             name, value = match.groups()
             value = value.strip()

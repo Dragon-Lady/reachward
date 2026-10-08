@@ -95,6 +95,8 @@ recursively searched. Extra sources must be JSON/JSONC or TOML MCP maps. Relativ
 env-file references resolve against the MCP config directory; unresolved variable
 references are not expanded. General shell syntax and multiline dotenv values
 are not interpreted. Encrypted rclone configs never prompt for a password.
+Whole configuration documents are parsed in memory; only the inventory metadata
+described above is retained. No conversation history is collected.
 
 All sources must be under `$HOME`. All symlinks (including parent components) are
 refused, a conservative restriction that also prevents following them outside
@@ -150,6 +152,7 @@ The optional **`scan --online`** runs exactly `gh api -i /user` and reads only
 `X-OAuth-Scopes`. It does not run during normal scans. This uses the active gh CLI
 identity, which may be affected by environment overrides; it does not prove
 scopes for every saved credential. A missing header means unknown, not no scopes.
+The `gh` executable is resolved from the current PATH.
 No Google/Slack token introspection, MCP connections or other audit networking.
 
 State under `$XDG_STATE_HOME/reachward` (default `~/.local/state/reachward`):

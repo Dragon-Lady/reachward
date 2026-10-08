@@ -182,8 +182,9 @@ def test_invalid_source_cannot_replace_baseline(home, put, capsys):
     assert OPAQUE not in json.dumps(value) + error
 
 
-def test_encrypted_rclone(home, put):
-    put(".config/rclone/rclone.conf", "RCLONE_ENCRYPT_V0:\nnot-a-real-encrypted-payload\n")
+@pytest.mark.parametrize("prefix", ["", "# Encrypted rclone configuration File\n\n", "\n  # comment\n ; comment\n\n"])
+def test_encrypted_rclone(home, put, prefix):
+    put(".config/rclone/rclone.conf", prefix + "RCLONE_ENCRYPT_V0:\nnot-a-real-encrypted-payload\n")
     value = snapshot(inv(home))
     assert value["complete"] and value["entries"][0]["token_storage"] == "encrypted: not inspected"
     assert any(s["status"] == "encrypted: not inspected" for s in value["sources"])
@@ -417,7 +418,7 @@ def test_redacted_labels_do_not_cause_permanent_diff(home, put):
 
 
 def test_encrypted_file_mode_still_checked(home, put):
-    put(".config/rclone/rclone.conf", "RCLONE_ENCRYPT_V0:\nopaque\n", mode=0o644)
+    put(".config/rclone/rclone.conf", "# Encrypted rclone configuration File\n\nRCLONE_ENCRYPT_V0:\nopaque\n", mode=0o644)
     assert "RW-FILE-MODE" in rules(snapshot(inv(home)))
 
 
@@ -436,3 +437,49 @@ def test_secret_cannot_rewrite_severity_or_schema(home, put):
     value = snapshot(inv(home))
     assert value["entries"][0]["source"]
     assert any(f["rule"] == "RW-INLINE-SECRET" and f["severity"] == "high" for f in value["findings"])
+
+
+@pytest.mark.parametrize("name", ["PATH", "NODE_PATH", "PYTHONPATH", "CODEX_CLI_PATH",
+                                 "NODE_REPL_NODE_PATH", "NODE_REPL_TRUSTED_CODE_PATHS",
+                                 "OTHER_PATHS", "projectPath", "KEYBOARD"])
+def test_nonsecret_names_do_not_hide_paths_or_raise_inline(home, put, name):
+    path_value = str(home / "tools")
+    source = mcp(put, {"command": sys.executable, "env": {name: path_value},
+                       name: path_value, "args": ["--" + name, path_value]}, name=path_value)
+    value = snapshot(inv(home))
+    entry = value["entries"][0]
+    assert "RW-INLINE-SECRET" not in rules(value)
+    assert entry["credentials"] == []
+    assert entry["name"] == path_value and entry["source"] == str(source)
+
+
+@pytest.mark.parametrize("name", ["PAT", "GH_PAT", "GITHUB_PAT", "pat-value", "KEY",
+                                 "API_KEY", "apiKey", "apikey", "clientSecret"])
+def test_secret_names_still_detect_and_redact(home, put, name):
+    mcp(put, {"command": sys.executable, "env": {name: OPAQUE}}, name=OPAQUE)
+    value = snapshot(inv(home))
+    assert "RW-INLINE-SECRET" in rules(value)
+    assert value["entries"][0]["credentials"] == [fingerprint(KEY, OPAQUE)]
+    assert OPAQUE not in json.dumps(value)
+
+
+def test_path_name_with_recognized_token_still_detected(home, put):
+    mcp(put, {"command": sys.executable, "env": {"PATH": CANARY}})
+    value = snapshot(inv(home))
+    assert "RW-INLINE-SECRET" in rules(value)
+    assert CANARY not in json.dumps(value)
+
+
+def test_env_path_names_ignored_but_pat_kept(home, put):
+    path = put(".env", "PATH=/usr/bin\nNODE_PATH=/opt/example\nPYTHONPATH=/opt/python\nGH_PAT=" + OPAQUE + "\n")
+    value = snapshot(inv(home, {"env_files": [str(path)]}))
+    assert [e["env_names"] for e in value["entries"]] == [["GH_PAT"]]
+    assert OPAQUE not in json.dumps(value)
+
+
+def test_rclone_marker_in_plaintext_section_is_not_encrypted(home, put):
+    put(".config/rclone/rclone.conf", "# ordinary config\n[cloud]\ntype = local\nRCLONE_ENCRYPT_V0: ordinary-value\n")
+    value = snapshot(inv(home))
+    assert value["complete"]
+    assert value["entries"][0]["name"] == "cloud"
+    assert not any(s["status"] == "encrypted: not inspected" for s in value["sources"])
