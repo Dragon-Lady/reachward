@@ -216,6 +216,11 @@ against a compromised user account. Run one writer per state directory.
 
 ## Review and tests
 
+For an executable before-and-after demonstration, see
+[Reproduce a permission finding](docs/proof-of-concept.md). It uses an isolated
+temporary home and fake credential, checks the installed package, and verifies
+that a separate operator permission correction clears the finding.
+
 ```sh
 python3 -m pip install pytest
 python3 -m pytest -q
