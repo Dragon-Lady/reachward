@@ -1,5 +1,6 @@
 """Collectors parse data only. No server startup, shell, eval, or keyring reads."""
 import configparser
+import errno
 from datetime import datetime, timezone
 import json
 import os
@@ -9,9 +10,9 @@ import shutil
 import stat
 from urllib.parse import urlsplit, parse_qsl, unquote
 
-from .config import tomllib
+from .config import command_search_path, home_path, tomllib
 from .safety import (absolute, bounded_read, fingerprint, is_value, read_error,
-                     Redactor, SafeError, secret_name, TOKEN)
+                     key_file_reference, Redactor, SafeError, secret_name, TOKEN)
 
 
 def scopes(value):
@@ -90,20 +91,30 @@ class Inventory:
         self.now = now or datetime.now(timezone.utc)
         self.known = set(cfg.get("known_servers", [])) | set(known)
         self.entries, self.sources, self.findings = [], [], []
-        self.env_paths = set(absolute(p) for p in cfg.get("env_files", []))
+        self.required_env_paths = set(home_path(p, home) for p in cfg.get("env_files", []))
+        self.env_paths = set(self.required_env_paths)
+        self.command_path = command_search_path(cfg, home)
         self.seen = set()
+
+    def source_id(self, collector, path):
+        return fingerprint(self.key, json.dumps(["source", collector, str(path)]))
 
     def finding(self, rule, entry, reason, severity="warn"):
         self.findings.append({"rule": rule, "severity": severity, "entry": entry["id"], "reason": reason})
 
     def record(self, collector, path, name, info, parent, kind="credential"):
         return {"id": fingerprint(self.key, json.dumps([collector, str(path), name])),
-                "collector": collector, "source": str(path), "name": str(name), "kind": kind,
+                "collector": collector, "source": str(path), "source_id": self.source_id(collector, path),
+                "name": str(name), "kind": kind,
                 "mode": format(stat.S_IMODE(info.st_mode), "04o"),
                 "directory_mode": format(stat.S_IMODE(parent.st_mode), "04o"),
                 "mtime_ns": info.st_mtime_ns, "credentials": [], "scopes": []}
 
     def credential(self, entry, value, inline=False):
+        if isinstance(value, list):
+            for item in value:
+                self.credential(entry, item, inline)
+            return
         if isinstance(value, str) and value.lower().startswith("bearer "):
             value = value[7:].strip()
         fp = self.redactor.add(value)
@@ -111,6 +122,15 @@ class Inventory:
             entry["credentials"].append(fp)
         if fp and inline:
             entry["inline_secret"] = True
+
+    def named_credential(self, entry, name, value, inline=False):
+        if key_file_reference(name, value):
+            item = {"field": str(name), "path_hmac": fingerprint(self.key, value)}
+            refs = entry.setdefault("key_file_references", [])
+            if item not in refs:
+                refs.append(item)
+        elif secret_name(name) or (isinstance(value, str) and TOKEN.search(value)):
+            self.credential(entry, value, inline)
 
     def mcp(self, collector, path, doc, info, parent):
         containers = [("", doc)]
@@ -141,8 +161,7 @@ class Inventory:
                     raise SafeError("invalid environment map; not inspected")
                 entry["env_names"] = sorted(str(n) for n in env)
                 for n, value in env.items():
-                    if secret_name(n) or (isinstance(value, str) and TOKEN.search(value)):
-                        self.credential(entry, value, True)
+                    self.named_credential(entry, n, value, True)
                 for value in server.get("env_vars", []):
                     if isinstance(value, str):
                         entry["env_names"].append(value)
@@ -159,17 +178,16 @@ class Inventory:
                     if isinstance(server.get(field), str):
                         entry["env_names"].append(server[field])
                 for field, value in server.items():
-                    if secret_name(field) and not field.endswith(("_env", "_env_var")):
-                        self.credential(entry, value, True)
+                    if not field.endswith(("_env", "_env_var")):
+                        self.named_credential(entry, field, value, True)
                 for index, arg in enumerate(args):
                     for match in TOKEN.finditer(arg):
                         self.credential(entry, match.group(), True)
                     if "=" in arg:
                         option, value = arg.split("=", 1)
-                        if secret_name(option):
-                            self.credential(entry, value, True)
+                        self.named_credential(entry, option, value, True)
                     elif index and args[index - 1].startswith("-") and secret_name(args[index - 1]):
-                        self.credential(entry, arg, True)
+                        self.named_credential(entry, args[index - 1], arg, True)
                     header = re.fullmatch(r"(?i)(?:authorization|x-api-key)\s*:\s*(.+)", arg)
                     if header:
                         self.credential(entry, header[1], True)
@@ -184,7 +202,7 @@ class Inventory:
                 if command:
                     expanded = os.path.expanduser(command)
                     candidate = absolute(path.parent / expanded) if "/" in expanded and not os.path.isabs(expanded) else expanded
-                    entry["command_missing"] = not (os.path.isfile(candidate) and os.access(candidate, os.X_OK)) if "/" in expanded else shutil.which(command) is None
+                    entry["command_missing"] = not (os.path.isfile(candidate) and os.access(candidate, os.X_OK)) if "/" in expanded else shutil.which(command, path=self.command_path) is None
                 else:
                     entry["command_missing"] = not bool(url)
                 entry["known"] = name in self.known or (prefix + name) in self.known
@@ -214,7 +232,7 @@ class Inventory:
         for ref in refs:
             if isinstance(ref, str) and "$" not in ref:
                 expanded = Path(os.path.expanduser(ref))
-                self.env_paths.add(absolute(expanded if expanded.is_absolute() else path.parent / expanded))
+                self.env_paths.add(home_path(expanded if expanded.is_absolute() else path.parent / expanded, self.home))
 
     def auth(self, collector, path, doc, info, parent):
         entry = self.record(collector, path, "authentication", info, parent)
@@ -223,8 +241,7 @@ class Inventory:
         def walk(obj):
             if isinstance(obj, dict):
                 for k, v in obj.items():
-                    if secret_name(k):
-                        self.credential(entry, v)
+                    self.named_credential(entry, k, v)
                     walk(v)
             elif isinstance(obj, list):
                 for v in obj:
@@ -261,8 +278,8 @@ class Inventory:
             if "drive_type" in item:
                 entry["drive_type"] = item["drive_type"]
             for key, value in item.items():
-                if secret_name(key) and key != "token":
-                    self.credential(entry, value)
+                if key != "token":
+                    self.named_credential(entry, key, value)
             if item.get("token"):
                 token = json.loads(item["token"])
                 if not isinstance(token, dict):
@@ -277,9 +294,11 @@ class Inventory:
     def env(self, path, raw, info, parent):
         for line in raw.decode("utf-8").splitlines():
             match = re.match(r"^\s*(?:export\s+)?([A-Za-z_]\w*)\s*=\s*(.*)$", line)
-            if not match or not secret_name(match[1]):
+            if not match:
                 continue
             name, value = match.groups()
+            if not secret_name(name) and not TOKEN.search(value):
+                continue
             value = value.strip()
             if value.startswith(('"', "'")) and not value.endswith(value[:1]):
                 raise SafeError("multiline environment value; not inspected")
@@ -287,9 +306,11 @@ class Inventory:
                 value = value[1:-1]
             else:
                 value = value.split(" #", 1)[0].strip()
+            if not secret_name(name) and not TOKEN.search(value):
+                continue
             entry = self.record("env", path, name, info, parent)
             entry["env_names"] = [name]
-            self.credential(entry, value)
+            self.named_credential(entry, name, value)
             self.entries.append(entry)
 
     def manual(self, path, doc, info, parent):
@@ -307,12 +328,13 @@ class Inventory:
                 entry["review_by"] = None
             self.entries.append(entry)
 
-    def read(self, collector, path, required=False):
-        path = absolute(path)
+    def read(self, collector, path, required=False, referenced=False):
+        path = home_path(path, self.home)
         if (collector, path) in self.seen:
             return
         self.seen.add((collector, path))
-        source = {"collector": collector, "path": str(path), "status": "missing", "required": required}
+        source = {"collector": collector, "path": str(path), "source_id": self.source_id(collector, path),
+                  "status": "missing", "required": required, "coverage": "complete"}
         self.sources.append(source)
         start = len(self.entries)
         try:
@@ -339,9 +361,14 @@ class Inventory:
                 self.mcp(collector, path, doc, info, parent)
         except FileNotFoundError:
             source["status"] = "missing"
+            source["coverage"] = "error" if required else "warning" if referenced else "complete"
+            if referenced and not required:
+                source["status"] = "missing referenced env file; not inspected"
             del self.entries[start:]
         except (OSError, ValueError, TypeError, KeyError, AttributeError, SafeError, configparser.Error, RecursionError) as exc:
             source["status"] = read_error(exc)
+            skipped_link = isinstance(exc, OSError) and exc.errno in (errno.ELOOP, errno.ENOTDIR)
+            source["coverage"] = "warning" if skipped_link and not (collector == "env" and required) else "error"
             del self.entries[start:]
 
     def collect(self, roots=()):
@@ -361,5 +388,5 @@ class Inventory:
         for item in self.cfg.get("extra_sources", []):
             self.read(item.get("collector", "other"), item["path"], required=True)
         for path in sorted(self.env_paths):
-            self.read("env", path, required=True)
+            self.read("env", path, required=path in self.required_env_paths, referenced=True)
         return self

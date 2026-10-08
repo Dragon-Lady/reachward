@@ -11,10 +11,9 @@ import stat
 from urllib.parse import unquote, urlsplit, parse_qsl
 
 MAX_BYTES = 5 * 1024 * 1024
-SECRET_NAME = re.compile(
-    r"TOKEN|SECRET|PASSWORD|PASSWD|WEBHOOK|AUTHORIZATION|CREDENTIAL|APIKEY|"
-    r"(?:^|[^A-Za-z0-9])(?:PAT|KEY)(?:$|[^A-Za-z0-9])", re.I
-)
+SECRET_PARTS = {"token", "tokens", "secret", "secrets", "password", "passwords",
+                "passwd", "webhook", "authorization", "credential", "credentials",
+                "apikey", "apikeys", "pat", "key", "keys", "githubpat", "gitlabpat"}
 TOKEN = re.compile(
     r"(?:gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}|"
     r"sk-[A-Za-z0-9_-]{16,}|xox[abpr]-[A-Za-z0-9-]{10,}|"
@@ -29,11 +28,33 @@ class SafeError(Exception):
     """Only static, non-sensitive messages belong in this exception."""
 
 
+def name_parts(name):
+    separated = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", str(name))
+    separated = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", separated)
+    return re.findall(r"[a-z0-9]+", separated.lower())
+
+
 def secret_name(name):
-    # Separate camelCase before matching short credential names as whole tokens.
-    # PATH/projectPath and KEYBOARD must not turn ordinary paths into secrets.
-    separated = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(name))
-    return SECRET_NAME.search(separated) is not None
+    parts = set(name_parts(name))
+    # Token counts and limits describe model settings, not authentication.
+    if parts & (SECRET_PARTS - {"token", "tokens"}):
+        return True
+    return bool(parts & {"token", "tokens"}) and not bool(parts & {
+        "max", "min", "maximum", "minimum", "count", "counts", "limit", "limits",
+        "budget", "num", "total", "input", "output", "prompt", "completion", "cached",
+    })
+
+
+def key_file_reference(name, value):
+    """Recognize path-valued credential references without reading their targets."""
+    if not is_value(value) or TOKEN.search(value):
+        return False  # A recognizable token always wins over a path/name hint.
+    parts = name_parts(name)
+    hinted = secret_name(name) and (bool(set(parts) & {"path", "paths", "file", "files"})
+                                  or parts == ["google", "application", "credentials"])
+    path_like = value.startswith(("/", "~/", "./", "../")) or bool(re.search(
+        r"\.(?:json|pem|key|p12|pfx|crt|cer|credentials)$", value, re.I))
+    return hinted and path_like
 
 
 def is_value(value):
@@ -62,8 +83,9 @@ class Redactor:
     def discover(self, value):
         if isinstance(value, dict):
             for name, item in value.items():
-                if secret_name(name) and not str(name).endswith(("_env", "_env_var")):
-                    self.add(item)
+                if secret_name(name) and not str(name).endswith(("_env", "_env_var")) and not key_file_reference(name, item):
+                    for candidate in item if isinstance(item, list) else [item]:
+                        self.add(candidate)
                 self.discover(name)
                 self.discover(item)
         elif isinstance(value, list):
@@ -90,7 +112,7 @@ class Redactor:
             # rewrite severity and suppress alert delivery.
             trusted = {"rule", "severity", "kind", "collector", "status", "reason",
                        "mode", "directory_mode", "time", "auth_type", "transport",
-                       "token_storage", "scope_visibility", "args_shape"}
+                       "token_storage", "scope_visibility", "args_shape", "coverage"}
             return {k: v if k in trusted else self.clean(v) for k, v in value.items()}
         if isinstance(value, list):
             return [self.clean(v) for v in value]

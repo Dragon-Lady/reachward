@@ -3,9 +3,12 @@ stale_days = 90
 known_servers = ["example-server"]
 roots = []
 env_files = []
+command_search_path = ["~/.local/bin", "/usr/local/bin", "/usr/bin", "/bin"]
 alert_channels = []
 
-# Each explicitly configured source is required: missing/unreadable means exit 2.
+# Explicit sources are required: missing/unreadable means exit 2. Source config
+# symlinks are skipped with a coverage warning; explicit env_files stay required.
+# Missing MCP-referenced env files warn, allowing the remaining baseline.
 # [[extra_sources]]
 # collector = "other"
 # path = "~/example/mcp.json"

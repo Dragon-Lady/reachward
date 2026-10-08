@@ -6,7 +6,7 @@ installed by the tool.
 
 ## Evidence available locally
 
-- 85 pytest cases pass with fake HOME and XDG directories on Python 3.12.
+- 162 pytest cases pass with fake HOME and XDG directories on Python 3.12.
 - Every rule has a positive and negative test. Exact baseline mutation tests
   cover additions, argument changes and mode changes.
 - Canary tests cover every command in text, JSON, Markdown and HTML, including
@@ -41,6 +41,31 @@ the original candidate, not claimed runtime verification of this patch.
 
 ## Independent review still required
 
+The follow-up retest findings N1–N3 and pre-timer items 4–7 are now addressed in
+this candidate:
+
+- Whole semantic credential names exclude token settings while retaining real
+  credential names, plural API/OPENAI keys and compact GITHUBPAT.
+- Key-file references carry field names and keyed path fingerprints, with an
+  informational finding. Targets are never opened. Reference values do not hide
+  HOME/source paths, and recognizable tokens override reference hints.
+- Source symlinks and missing referenced env files produce partial coverage,
+  not a fatal scan. Explicit required env files and actual read/parse errors
+  still fail. HOME aliases normalize only the selected root, with a warning;
+  nested source symlinks remain skipped.
+- Baselines retain source coverage. Skipped sources and hidden env references
+  are excluded from comparisons on either side, including coverage recovery;
+  comparison warnings remain until a reviewed complete baseline is established.
+- Command lookup uses a fixed configurable search path, also printed in the
+  timer unit and passed to optional gh execution. Derived lookup/known metadata
+  and online-only scope observations do not create configuration changes.
+
+The new tests include every named retest case, target hashes/size/mtime/mode/inode
+preservation, no key-file reads, symlink targets inside/outside HOME, HOME aliases,
+partial-baseline recovery, required-file failure, unaffected-source changes,
+fixed PATH/timer quoting, online/offline diff symmetry, and privacy/schema checks.
+The original offline, canary, private-mode and aggregate alert tests remain.
+
 - Retest the correction diff and inspect the updated private scan report.
 - Run `list-sources` and an offline scan on the second intended Linux host. Some
   agent configurations were absent/empty on the first host; fixture coverage is
@@ -48,11 +73,9 @@ the original candidate, not claimed runtime verification of this patch.
 - Decide whether to use the optional online scope check, the alert destinations,
   and a schedule. They are implemented but external delivery and scheduling
   have not been enabled or live-tested.
-- Before enabling alerts/timers, address the review's follow-ups: report skipped
-  symlinks and missing referenced env files as coverage warnings without blocking
-  the entire inventory; use a fixed command search path; exclude derived lookup
-  fields from configuration-change comparisons. These are outside this focused
-  correction patch and remain outstanding.
+- Independently retest the follow-up fixes and coverage semantics before enabling
+  alerts/timers. Partial coverage is eligible for a baseline but is never
+  represented as complete; exit 1 signals coverage/comparison warnings.
 - Re-run the correction tests on Python 3.10; the development host uses 3.12.
 - Inspect false positives and blind spots: no keyring queries; restricted gh
   YAML/dotenv parsing; heuristic argument credential/pin detection; declared

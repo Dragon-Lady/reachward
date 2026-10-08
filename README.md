@@ -47,7 +47,7 @@ during a scan.
 reachward scan --format json
 reachward scan --roots ~/projects/example
 reachward baseline                  # after locally reviewing the inventory
-reachward diff                      # exit 0 if unchanged, 1 for changes
+reachward diff                      # exit 0 if unchanged with no coverage gaps
 reachward scan --diff --format html --output reachward-report.html
 reachward known add example-server
 reachward known list
@@ -63,16 +63,36 @@ self-contained and escaped; no scripts, remote assets, or executable links.
 An existing baseline requires `baseline --force` to replace it. Establishing a
 baseline does not approve findings or add names to the known-server list.
 
-Exit codes: **0** no findings (or no changes for `diff`); **1** findings/changes;
-**2** usage, incomplete scan, unsafe file modes, or runtime/delivery error.
-An incomplete scan cannot replace a baseline or produce a misleading diff.
-Encrypted rclone sources are explicitly marked uninspected rather than errors.
-Missing optional default files are normal; explicit extra sources/env files are
-required. Removing a previously inventoried optional source produces removals.
+Exit codes: **0** no findings (or no changes for `diff`) and no coverage warnings;
+**1** findings, changes, or coverage/comparison warnings; **2** usage, fatal scan
+errors, unsafe state/config modes, or runtime/delivery error. Credential-file
+permission findings are advisories, not runtime errors.
+
+Coverage is explicit in JSON and every report format. `coverage` is `complete`,
+`partial`, or `error`; `complete` is false for partial/error coverage.
+`baseline_eligible` distinguishes a partial inventory that can be recorded from
+a fatal error that must not replace a baseline or be compared. Skipped source
+symlinks and missing MCP-referenced env files produce `coverage_warnings` and
+exit 1, without blocking the rest of the inventory. Parse failures, unreadable
+files, and missing explicitly configured `extra_sources`/`env_files` remain
+errors. Explicit `env_files` also remain required when they are symlinks.
+Encrypted rclone sources retain their explicit uninspected status.
+
+Baselines save per-source coverage and keyed source identities. Entries skipped
+on either side are excluded from comparisons and listed in
+`comparison_warnings`; recovering coverage alone is not an added server. A
+skipped MCP config may conceal env-file references, so env sources not enumerated
+on that side are conservatively excluded too. Inspect recovered sources and
+refresh the baseline to establish comparison coverage. Encrypted sources cannot
+be compared and remain a comparison warning. Missing optional default files are
+normal: removing a previously read optional source still produces removals.
 
 Metadata mtime alone is not an inventory change, preventing unrelated file edits
 from flagging every server. Credential, mode, command, argument, destination and
-other inventory changes are compared. Baselines and fingerprints are local to
+other inventory changes are compared. Derived `known` and `command_missing`
+fields, source identity metadata added by the auditor, and optional online-only
+GitHub scopes/visibility are excluded. Local/manual scope changes are compared.
+Baselines and fingerprints are local to
 their key: do not compare baselines from different machines or regenerate a key
 in place. Preserve `fp.key` with backups of the state.
 
@@ -98,10 +118,14 @@ are not interpreted. Encrypted rclone configs never prompt for a password.
 Whole configuration documents are parsed in memory; only the inventory metadata
 described above is retained. No conversation history is collected.
 
-All sources must be under `$HOME`. All symlinks (including parent components) are
-refused, a conservative restriction that also prevents following them outside
-home. Special files, files over 5 MiB, unreadable files and files changing during
-a read are not inspected. Checks use no-follow directory/file descriptors.
+All sources must be under `$HOME`. If HOME itself is an alias, its root is
+canonicalized once, with an explicit coverage warning. Matching HOME-prefixed
+XDG/config/source paths are normalized to that root. Source symlinks beneath the
+root (including parent components) are skipped without opening their targets,
+whether the target is inside or outside home. Reach Ward's own config and state
+retain strict no-follow checks and are refused when unsafe. Special files,
+files over 5 MiB, unreadable files and files changing during a read are not
+inspected. Checks use no-follow directory/file descriptors.
 
 `hosts.yml` is parsed using a restricted, non-executing subset covering gh's
 host/user records; unsupported YAML is an explicit incomplete scan. Absence of
@@ -120,13 +144,33 @@ queries the keyring, uses `gh auth token`, or claims a token is present there.
 | `RW-SERVER-CHANGED` | Known server's command, arguments, host or transport changed against baseline |
 | `RW-UNPINNED-LAUNCH` | `npx -y`, `uvx` or `pipx run` without an exact package version; informational |
 | `RW-DUP-CREDENTIAL` | Same fingerprint in more than one inventory entry; informational |
+| `RW-KEY-FILE-REFERENCE` | Path-valued credential reference; target not inspected; informational |
+
+Credential names use whole semantic words, including camelCase and plural
+`KEYS`; compact `GITHUBPAT`/`GITLABPAT` are recognized explicitly. Ordinary
+`PATH`, `KEYBOARD`, `MAX_TOKENS`, and `TOKENIZERS_PARALLELISM` settings do not
+become credentials. Token count/limit/budget names are treated as settings;
+recognized provider-shaped token values still take precedence under any name.
+
+Path-valued `GOOGLE_APPLICATION_CREDENTIALS`, `privateKeyPath`, `credentialsPath`
+and other credential names with a file/path word produce only reference field
+names and keyed path fingerprints (`key_file_references`). They do not produce
+inline-secret findings or feed path values into global credential redaction.
+Targets are never opened or checked for existence/permissions. Reference
+classification requires a path prefix (`/`, `~/`, `./`, `../`) or a familiar
+key-file suffix such as `.json`/`.pem`/`.key`; ambiguous opaque values retain
+credential handling. Provider-shaped tokens override this classification even
+inside a path. Arbitrary credential formats remain heuristic, not exhaustive.
 
 Arguments and full commands are compared with keyed HMACs, not stored. The
 argument shape uses only generic categories. Pin detection is conservative and
 does not resolve packages or wrapper scripts. Scopes inferred from local files
 or manual entries are declarations, not proof of actual provider permissions.
-File age is not token age. Missing command checks use the current PATH/config
-directory; clients with different launch environments may behave differently.
+File age is not token age. Missing command checks use a fixed, configurable
+`command_search_path`, defaulting to `~/.local/bin`, `/usr/local/bin`, `/usr/bin`,
+and `/bin`; the ambient shell PATH is ignored. A command containing a slash is
+checked directly (relative to its config directory when needed). Nothing is
+executed by this check. Client launch environments may still differ.
 
 ## Configuration and alerts
 
@@ -135,6 +179,14 @@ See [example config](examples/config.toml) and
 [manual connectors](examples/cloud_connectors.toml). `known add/remove` updates
 only Reach Ward's private `known.json`; it never edits the config. Configured
 known names must be removed by explicitly editing the config.
+
+`command_search_path` is an ordered array of absolute or `~/` directories;
+empty/relative entries, colons and control characters are rejected. The same
+search path is used by the optional online check and printed as an explicit
+`Environment="PATH=..."` in `print-timer`. A custom `--config` path is retained in
+the printed unit. Unit paths are quoted/escaped; recognizable credential-shaped
+or control-containing paths are refused without echoing them. Printing units
+loads configuration but creates no state and installs or starts nothing.
 
 `alert_channels` accepts `stdout`, `slack`, `ntfy`, `email`; `[]` means stdout.
 Configuring external channels explicitly enables alert networking. `scan` sends
@@ -152,7 +204,7 @@ The optional **`scan --online`** runs exactly `gh api -i /user` and reads only
 `X-OAuth-Scopes`. It does not run during normal scans. This uses the active gh CLI
 identity, which may be affected by environment overrides; it does not prove
 scopes for every saved credential. A missing header means unknown, not no scopes.
-The `gh` executable is resolved from the current PATH.
+The `gh` executable is resolved from `command_search_path`.
 No Google/Slack token introspection, MCP connections or other audit networking.
 
 State under `$XDG_STATE_HOME/reachward` (default `~/.local/state/reachward`):

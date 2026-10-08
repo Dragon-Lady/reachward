@@ -2,6 +2,7 @@ import argparse
 from datetime import datetime, timedelta, timezone
 import html
 import json
+from pathlib import Path
 import re
 import sys
 
@@ -9,8 +10,8 @@ from . import __version__
 from .alerts import deliver
 from .audit import online_scopes, snapshot
 from .collectors import Inventory
-from .config import load_config, locations
-from .safety import absolute, Redactor, SafeError, Store, write_private
+from .config import command_search_path, home_path, load_config, locations
+from .safety import absolute, Redactor, SafeError, Store, TOKEN, write_private
 
 
 class Parser(argparse.ArgumentParser):
@@ -58,10 +59,17 @@ def render(value, format):
     return text + "\n"
 
 
-def timer(interval):
+def systemd_quote(value):
+    if TOKEN.search(value) or any(ord(c) < 32 or ord(c) == 127 for c in value):
+        raise SafeError("timer path contains a credential-like value or control character; not printed")
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%") + '"'
+
+
+def timer(interval, command_path, config_path=None):
     if not re.fullmatch(r"[1-9]\d{0,5}[smhd]", interval):
         raise SafeError("interval must be a positive number followed by s, m, h or d")
-    return {"reachward.service": "[Unit]\nDescription=Reach Ward offline inventory\n\n[Service]\nType=oneshot\nExecStart=%h/.local/bin/reachward scan --diff\nSuccessExitStatus=1\nUMask=0077\nNoNewPrivileges=true\n",
+    config_option = " --config " + systemd_quote(str(config_path).replace("$", "$$")) if config_path else ""
+    return {"reachward.service": "[Unit]\nDescription=Reach Ward offline inventory\n\n[Service]\nType=oneshot\nEnvironment=" + systemd_quote("PATH=" + command_path) + "\nExecStart=%h/.local/bin/reachward" + config_option + " scan --diff\nSuccessExitStatus=1\nUMask=0077\nNoNewPrivileges=true\n",
             "reachward.timer": "[Unit]\nDescription=Reach Ward inventory timer\n\n[Timer]\nOnBootSec=5m\nOnUnitActiveSec=" + interval + "\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n"}
 
 
@@ -72,15 +80,16 @@ def history(store, value):
     counts = {}
     for f in value["findings"]:
         counts[f["rule"]] = counts.get(f["rule"], 0) + 1
-    entries.append({"time": value["time"], "complete": value["complete"], "entries": len(value["entries"]), "findings": counts, "changes": len(value["changes"])})
+    entries.append({"time": value["time"], "complete": value["complete"], "coverage": value["coverage"], "entries": len(value["entries"]), "findings": counts, "changes": len(value["changes"])})
     store.save("history.json", entries)
 
 
 def execute(args):
-    if args.command == "print-timer":
-        return timer(args.interval), 0
     home, config_home, state_home = locations()
-    cfg = load_config(absolute(args.config) if args.config else config_home / "reachward/config.toml")
+    config_path = home_path(args.config, home) if args.config else config_home / "reachward/config.toml"
+    cfg = load_config(config_path)
+    if args.command == "print-timer":
+        return timer(args.interval, command_search_path(cfg, home), config_path if args.config else None), 0
     store = Store(state_home / "reachward")
     known = store.read("known.json", [])
     if args.command == "known":
@@ -112,20 +121,22 @@ def execute(args):
             value["alerts"] = deliver(cfg, store, value["findings"], value["changes"])
         return value, status(value)
     inv = Inventory(home, config_home, cfg, store.key, known).collect(args.roots)
+    inv.home_alias = absolute(Path.home()) != home
     if args.command == "list-sources":
         value = snapshot(inv)
-        return {"sources": value["sources"], "complete": value["complete"]}, 0 if value["complete"] else 2
+        result = {k: value[k] for k in ("sources", "complete", "coverage", "coverage_warnings", "baseline_eligible")}
+        return result, status(result)
     if args.online:
         online_scopes(inv)
     baseline = store.read("baseline.json")
     value = snapshot(inv, baseline, args.command == "diff" or getattr(args, "diff", False))
     if args.command == "baseline":
-        if not value["complete"]:
+        if not value["baseline_eligible"]:
             raise SafeError("incomplete inventory; baseline refused (run list-sources)")
         if baseline is not None and not args.force:
             raise SafeError("baseline exists; use --force after review")
         # A baseline records the inventory, not an approval of any findings.
-        store.save("baseline.json", {"schema": 1, "time": value["time"], "entries": value["entries"]})
+        store.save("baseline.json", {k: value[k] for k in ("schema", "time", "entries", "sources", "coverage", "coverage_warnings")})
     elif args.command in {"scan", "diff"}:
         alert_findings = [f for f in value["findings"] if f["severity"] == "high"]
         if alert_findings or value["changes"]:
@@ -134,14 +145,14 @@ def execute(args):
     history(store, value)
     if args.command == "diff":
         # Exit status reflects changes only; current advisories remain visible.
-        return value, 2 if not value["complete"] or value.get("alerts", {}).get("failed") else int(bool(value["changes"]))
+        return value, 2 if not value["baseline_eligible"] or value.get("alerts", {}).get("failed") else int(bool(value["changes"] or value["coverage_warnings"] or value["comparison_warnings"]))
     return value, status(value)
 
 
 def status(value):
-    if not value.get("complete", True) or value.get("alerts", {}).get("failed"):
+    if not value.get("baseline_eligible", value.get("complete", True)) or value.get("alerts", {}).get("failed"):
         return 2
-    return int(bool(value.get("findings") or value.get("changes")))
+    return int(bool(value.get("findings") or value.get("changes") or value.get("coverage_warnings") or value.get("comparison_warnings")))
 
 
 def main(argv=None):

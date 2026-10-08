@@ -8,11 +8,29 @@ except ImportError:  # Python 3.10 only
 
 from .safety import absolute, bounded_read, SafeError
 
+DEFAULT_COMMAND_SEARCH_PATH = ["~/.local/bin", "/usr/local/bin", "/usr/bin", "/bin"]
+
+
+def home_path(path, home):
+    """Normalize only the selected HOME alias, never resolve source symlinks."""
+    path, alias = absolute(path), absolute(Path.home())
+    return home / path.relative_to(alias) if path.is_relative_to(alias) else path
+
+
+def command_search_path(cfg, home):
+    values = cfg.get("command_search_path", DEFAULT_COMMAND_SEARCH_PATH)
+    if not isinstance(values, list) or not values or any(
+        not isinstance(v, str) or not v or (not v.startswith(("/", "~/")))
+        or ":" in v or any(ord(c) < 32 or ord(c) == 127 for c in v) for v in values
+    ):
+        raise SafeError("command_search_path must contain absolute or ~/ directories without colons or controls")
+    return os.pathsep.join(str(home_path(v, home)) for v in values)
+
 
 def locations():
-    home = absolute(Path.home())
-    config = absolute(os.environ.get("XDG_CONFIG_HOME", home / ".config"))
-    state = absolute(os.environ.get("XDG_STATE_HOME", home / ".local/state"))
+    home = absolute(Path.home()).resolve(strict=True)
+    config = home_path(os.environ.get("XDG_CONFIG_HOME", home / ".config"), home)
+    state = home_path(os.environ.get("XDG_STATE_HOME", home / ".local/state"), home)
     return home, config, state
 
 
@@ -35,4 +53,5 @@ def load_config(path):
         raise SafeError("invalid extra_sources configuration")
     if "alert_slack_webhook" in cfg:
         raise SafeError("use alert_slack_webhook_env; inline webhook URLs are not accepted")
+    command_search_path(cfg, absolute(Path.home()))
     return cfg
